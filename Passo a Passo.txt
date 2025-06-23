@@ -1,0 +1,479 @@
+# Célula 1: Configuração Inicial e Instalações
+
+# 1. Montar o Google Drive
+print("--- Montando Google Drive ---")
+try:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    print("Google Drive montado com sucesso.")
+except Exception as e:
+    print(f"Erro ao montar o Google Drive: {e}. Por favor, verifique sua conexão e permissões.")
+    # Se o Drive não montar, o restante do script pode falhar. Interrompe a execução.
+    exit()
+
+# 2. Criar a pasta do projeto e navegar até ela
+print("\n--- Criando pasta do projeto e navegando para ela ---")
+# '-p' garante que o diretório só será criado se não existir
+!mkdir -p /content/FirstCrewAIProject
+# '%cd' muda o diretório de trabalho para a sessão atual do notebook
+%cd /content/FirstCrewAIProject
+print("Diretório atual: /content/FirstCrewAIProject")
+
+# 3. Instalar/Atualizar TODAS as dependências necessárias
+print("\n--- Forçando instalação/atualização de dependências (pode levar alguns minutos) ---")
+# O uso de '--upgrade' e '--force-reinstall' garante que as versões mais recentes
+# e compatíveis sejam instaladas, resolvendo possíveis conflitos.
+!pip install --upgrade --force-reinstall crewai crewai_tools langchain_openai moviepy transformers accelerate optimum bitsandbytes sentencepiece datasets
+print("\nInstalação/Atualização de dependências concluída.")
+
+# 4. Configurar a Chave da API da OpenAI (VIA SECRETS DO COLAB - ALTAMENTE RECOMENDADO!)
+print("\n--- Configurando OPENAI_API_KEY via Secrets do Colab ---")
+print("Para evitar expor sua chave, vá no ícone de 'cadeado' (Secrets) na barra lateral esquerda.")
+print("Adicione uma nova entrada com o **Nome**: 'OPENAI_API_KEY'.")
+print("No campo de **Valor**, cole sua chave API da OpenAI.")
+print("Certifique-se de que a opção 'Notebook access' esteja **ativada** para 'OPENAI_API_KEY'.")
+print("Depois de adicionar, você pode prosseguir para a próxima célula.")
+
+
+
+
+
+
+Célula 2: Criação do Arquivo tools.py
+Esta célula cria o arquivo tools.py, que contém as ferramentas personalizadas que os agentes da CrewAI utilizarão para interagir com o ambiente (conversão de vídeo/áudio, transcrição e gerenciamento de arquivos).
+
+
+# Célula 2: Criar o Arquivo `tools.py`
+
+print("--- Criando tools.py ---")
+%%writefile tools.py
+# tools.py
+
+import os
+from crewai_tools import BaseTool
+from moviepy.editor import VideoFileClip
+from transformers import pipeline
+import torch
+
+class ColabVideoToAudioTool(BaseTool):
+    name: str = "Colab Video to Audio Converter"
+    description: "Converts a video file (e.g., MP4) into an MP3 audio file within the Google Colab environment. " \
+                       "Requires full input and output file paths."
+
+    def _run(self, video_path: str, audio_output_path: str) -> str:
+        try:
+            if not os.path.exists(video_path):
+                return f"Erro: Arquivo de vídeo de entrada não encontrado em '{video_path}'."
+            output_dir = os.path.dirname(audio_output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            video_clip = VideoFileClip(video_path)
+            audio_clip = video_clip.audio
+            audio_clip.write_audiofile(audio_output_path, codec='mp3')
+            audio_clip.close()
+            video_clip.close()
+            return f"Sucesso: Vídeo '{video_path}' convertido para áudio MP3 em '{audio_output_path}'."
+        except Exception as e:
+            return f"Erro durante a conversão de vídeo para áudio: {e}"
+
+
+class ColabWhisperTranscriptionTool(BaseTool):
+    name: str = "Colab Whisper Audio Transcriber"
+    description: "Transcribes an audio file (e.g., MP3) into text using the Whisper ASR model " \
+                       "within the Google Colab environment. Requires full input audio file path and " \
+                       "output text file path."
+
+    def _run(self, audio_path: str, transcription_output_path: str, model_name: str = "openai/whisper-small") -> str:
+        try:
+            if not os.path.exists(audio_path):
+                return f"Erro: Arquivo de áudio de entrada não encontrado em '{audio_path}'."
+            output_dir = os.path.dirname(transcription_output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            print(f"Usando dispositivo: {device} para Whisper.")
+            transcriber = pipeline("automatic-speech-recognition", model=model_name, device=device)
+            transcription = transcriber(audio_path)["text"]
+            with open(transcription_output_path, "w", encoding="utf-8") as f:
+                f.write(transcription)
+            return f"Sucesso: Áudio '{audio_path}' transcrito para '{transcription_output_path}'. Transcrição: '{transcription[:200]}...' (primeiros 200 caracteres)."
+        except Exception as e:
+            return f"Erro durante a transcrição do áudio com Whisper: {e}"
+
+
+class FileManagerTool(BaseTool):
+    name: str = "File Manager"
+    description: "Manages file operations such as checking existence, reading content, and writing content to files."
+
+    def _run(self, operation: str, path: str, content: str = None) -> str:
+        try:
+            if operation == 'exists':
+                return str(os.path.exists(path))
+            elif operation == 'read':
+                if not os.path.exists(path):
+                    return f"Erro: Arquivo não encontrado para leitura em '{path}'."
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            elif operation == 'write':
+                output_dir = os.path.dirname(path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return f"Sucesso: Conteúdo escrito em '{path}'."
+            elif operation == 'makedirs':
+                os.makedirs(path, exist_ok=True)
+                return f"Sucesso: Diretório '{path}' criado ou já existente."
+            else:
+                return f"Erro: Operação de arquivo '{operation}' não suportada."
+        except Exception as e:
+            return f"Erro na operação de arquivo '{operation}' em '{path}': {e}"
+
+print("Arquivo 'tools.py' criado com sucesso.")
+
+
+
+
+
+
+Célula 3: Criação do Arquivo agents.py
+Esta célula cria o arquivo agents.py, definindo os diferentes agentes que compõem sua equipe, seus papéis, objetivos e quais ferramentas eles podem usar.
+
+
+# Célula 3: Criar o Arquivo `agents.py`
+
+print("--- Criando agents.py ---")
+%%writefile agents.py
+# agents.py
+
+import os # Importar para usar userdata.get()
+from crewai import Agent
+from textwrap import dedent
+from langchain_openai import ChatOpenAI
+from google.colab import userdata # Importar para acessar secrets
+
+from tools import (
+    ColabVideoToAudioTool,
+    ColabWhisperTranscriptionTool,
+    FileManagerTool,
+)
+
+class MediaProcessingAgents:
+    def __init__(self):
+        # Tenta carregar a chave da API do OpenAI dos secrets do Colab
+        try:
+            os.environ["OPENAI_API_KEY"] = userdata.get('OPENAI_API_KEY')
+            # print("OPENAI_API_KEY carregada dos secrets do Colab em agents.py.") # Pode descomentar para debug
+        except Exception as e:
+            print(f"Erro ao carregar OPENAI_API_KEY em agents.py: {e}")
+            print("Verifique se a chave está configurada corretamente nos secrets e com acesso ao notebook.")
+            # Você pode escolher sair aqui ou deixar o LLM falhar mais tarde.
+            # Para CrewAI, a chave é essencial.
+            # exit()
+
+        # O modelo gpt-4o é recomendado para melhores resultados
+        self.gpt_model = ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+
+    def media_processor_agent(self):
+        return Agent(
+            role=dedent("""Especialista em manipulação e conversão de formatos de mídia."""),
+            backstory=dedent("""\
+                Você é um engenheiro de mídia com vasta experiência em processamento de vídeo e áudio.
+                Sua expertise inclui o uso de bibliotecas avançadas para converter, extrair e otimizar
+                arquivos de mídia, garantindo a melhor qualidade e compatibilidade para as próximas etapas
+                do fluxo de trabalho."""),
+            goal=dedent("""\
+                Converter arquivos de vídeo em áudio MP3 de alta qualidade e gerenciar eficientemente
+                as operações de arquivo no ambiente do Google Colab (Google Drive montado)."""),
+            verbose=True, # Define se o agente mostrará pensamentos e ações detalhadas
+            allow_delegation=False, # Define se o agente pode delegar tarefas para outros agentes
+            llm=self.gpt_model, # O modelo de linguagem grande (LLM) que o agente usará
+            tools=[ # Ferramentas que o agente tem acesso para executar suas tarefas
+                ColabVideoToAudioTool(),
+                FileManagerTool()
+            ]
+        )
+
+    def audio_transcriber_agent(self):
+        return Agent(
+            role=dedent("""Linguista computacional e especialista em reconhecimento de fala."""),
+            backstory=dedent("""\
+                Você é um perito em transformar fala em texto, com um profundo conhecimento de modelos
+                de reconhecimento automático de fala (ASR), como o Whisper. Sua missão é garantir
+                transcrições precisas e contextualmente corretas a partir de arquivos de áudio,
+                superando desafios como ruídos e sotaques."""),
+            goal=dedent("""\
+                Transcrever arquivos de áudio MP3 em transcrições textuais precisas e completas,
+                otimizando o uso do modelo Whisper para os melhores resultados."""),
+            verbose=True,
+            allow_delegation=False,
+            llm=self.gpt_model,
+            tools=[
+                ColabWhisperTranscriptionTool(),
+                FileManagerTool()
+            ]
+        )
+
+    def didactic_content_creator_agent(self):
+        return Agent(
+            role=dedent("""Criador de Conteúdo Didático e Formatador HTML."""),
+            backstory=dedent("""\
+                Você é um editor de conteúdo experiente, com uma paixão por transformar informações
+                complexas em materiais educacionais claros, concisos e envolventes. Sua especialidade
+                inclui a organização de conteúdo para fácil compreensão e a formatação em HTML,
+                garantindo que o material seja não apenas informativo, mas também visualmente acessível."""),
+            goal=dedent("""\
+                Criar resumos didáticos e explicativos a partir de transcrições textuais e formatá-los
+                em HTML acessível para fins educacionais."""),
+            verbose=True,
+            allow_delegation=False,
+            llm=self.gpt_model,
+            tools=[
+                FileManagerTool(), # Este agente só precisa da ferramenta de gerenciamento de arquivos para ler a transcrição e escrever o HTML
+            ]
+        )
+
+print("Arquivo 'agents.py' criado com sucesso.")
+
+
+
+
+
+
+
+Célula 4: Criação do Arquivo tasks.py
+Esta célula cria o arquivo tasks.py, onde você define as tarefas específicas que a Crew (equipe) irá executar. Cada tarefa tem uma descrição clara e um resultado esperado.
+
+
+# Célula 4: Criar o Arquivo `tasks.py`
+
+print("--- Criando tasks.py ---")
+%%writefile tasks.py
+# tasks.py
+
+from crewai import Task
+from textwrap import dedent
+
+class CustomTasks:
+    def __init__(self):
+        pass
+
+    def process_media_task(self, agent, video_input_path, audio_output_path):
+        return Task(
+            description=dedent(f"""
+                Converta o arquivo de vídeo localizado em '{video_input_path}' para um arquivo de áudio MP3 de alta qualidade.
+                O arquivo de áudio resultante deve ser salvo como '{audio_output_path}'.
+                Garanta que todas as operações de arquivo sejam realizadas de forma robusta e eficiente no ambiente do Google Colab.
+                Verifique se o arquivo de vídeo existe antes de tentar a conversão.
+            """),
+            expected_output=dedent(f"""
+                O caminho completo para o arquivo MP3 gerado: '{audio_output_path}'.
+                Uma confirmação clara de que o processo de conversão foi concluído com sucesso e o arquivo MP3 está pronto.
+                Se houver um erro, uma descrição detalhada do motivo da falha.
+            """),
+            agent=agent,
+        )
+
+    def transcribe_audio_task(self, agent, audio_input_path, transcription_output_path):
+        return Task(
+            description=dedent(f"""
+                Transcreva o conteúdo do arquivo de áudio MP3 localizado em '{audio_input_path}' para texto.
+                Salve a transcrição completa e precisa no arquivo '{transcription_output_path}'.
+                Utilize as melhores práticas para otimização do reconhecimento de fala, garantindo alta fidelidade e clareza.
+                Certifique-se de que o áudio de entrada existe antes de iniciar a transcrição.
+            """),
+            expected_output=dedent(f"""
+                O caminho completo para o arquivo de texto com a transcrição: '{transcription_output_path}'.
+                A transcrição completa e revisada do áudio, pronta para ser usada para criação de conteúdo didático.
+                Se houver um erro, uma descrição detalhada do motivo da falha.
+            """),
+            agent=agent,
+        )
+
+    def didactic_content_creation_task(self, agent, transcription_input_path, html_output_path):
+        return Task(
+            description=dedent(f"""
+                Baseado na transcrição textual do arquivo '{transcription_input_path}', crie um resumo didático e explicativo.
+                Organize o conteúdo por tópicos de forma clara, coesa e envolvente para o público-alvo.
+                Formate o resumo final em HTML, salvando-o em '{html_output_path}', para torná-lo um material educacional
+                acessível e interativo. O HTML deve ser bem estruturado com cabeçalhos (h1, h2, etc.), parágrafos,
+                e listas (ordenadas/não ordenadas) quando apropriado.
+                Garanta que a transcrição de entrada possa ser lida e que o arquivo HTML seja salvo corretamente.
+            """),
+            expected_output=dedent(f"""
+                Um arquivo HTML didático e bem formatado com o resumo completo do conteúdo, localizado em '{html_output_path}'.
+                O HTML deve ser de alta qualidade, pronto para ser usado como material educacional.
+                Se houver um erro, uma descrição detalhada do motivo da falha.
+            """),
+            agent=agent,
+        )
+
+print("Arquivo 'tasks.py' criado com sucesso.")
+
+
+
+
+
+
+
+
+Célula 5: Criação do Arquivo main.py
+Esta célula cria o arquivo main.py, que é o ponto de entrada do seu projeto. Ele lida com a configuração da API Key, a solicitação dos caminhos de entrada/saída ao usuário, a instanciação dos agentes e tarefas, e a execução da CrewAI.
+
+
+# Célula 5: Criar o Arquivo `main.py`
+
+print("--- Criando main.py ---")
+%%writefile main.py
+# main.py
+
+import os
+from google.colab import userdata
+from crewai import Crew, Process
+from textwrap import dedent
+
+from agents import MediaProcessingAgents
+from tasks import CustomTasks
+
+# Esta verificação é redundante se já foi feita na Célula 1, mas garante a disponibilidade
+# da chave antes de instanciar ChatOpenAI em MediaProcessingAgents.
+try:
+    # A chave é lida aqui para garantir que esteja no ambiente antes da CrewAI ser inicializada.
+    # A classe MediaProcessingAgents também a acessa via os.environ.
+    _ = userdata.get('OPENAI_API_KEY') # Apenas verifica se existe, não precisa atribuir novamente
+    print("OPENAI_API_KEY acessível para o ambiente principal.")
+except Exception as e:
+    print(f"Erro: OPENAI_API_KEY não encontrada ou acessível. Por favor, configure-a nos secrets do Colab: {e}")
+    exit() # Aborta se a chave não estiver configurada
+
+class MediaProcessingCrew:
+    def __init__(self, video_input_path, audio_output_path, transcription_output_path, html_output_path):
+        self.video_input_path = video_input_path
+        self.audio_output_path = audio_output_path
+        self.transcription_output_path = transcription_output_path
+        self.html_output_path = html_output_path
+        
+        self.agents = MediaProcessingAgents()
+        self.tasks = CustomTasks()
+
+    def run(self):
+        media_processor = self.agents.media_processor_agent()
+        audio_transcriber = self.agents.audio_transcriber_agent()
+        content_creator = self.agents.didactic_content_creator_agent()
+
+        process_media_task = self.tasks.process_media_task(
+            agent=media_processor, 
+            video_input_path=self.video_input_path, 
+            audio_output_path=self.audio_output_path
+        )
+        transcribe_audio_task = self.tasks.transcribe_audio_task(
+            agent=audio_transcriber, 
+            audio_input_path=self.audio_output_path,
+            transcription_output_path=self.transcription_output_path
+        )
+        didactic_content_creation_task = self.tasks.didactic_content_creation_task(
+            agent=content_creator, 
+            transcription_input_path=self.transcription_output_path,
+            html_output_path=self.html_output_path
+        )
+
+        crew = Crew(
+            agents=[media_processor, audio_transcriber, content_creator],
+            tasks=[process_media_task, transcribe_audio_task, didactic_content_creation_task],
+            verbose=True,
+            process=Process.sequential
+        )
+
+        print("\nIniciando a execução da CrewAI...")
+        return crew.kickoff()
+
+if __name__ == "__main__":
+    print(dedent("""
+        ##############################################################
+        ## Bem-vindo à Orquestração de Processamento de Média CrewAI! ##
+        ##############################################################
+    """))
+
+    print("--- Verificando a montagem do Google Drive (necessária para os caminhos de arquivos) ---")
+    if not os.path.exists('/content/drive/MyDrive'):
+        print("AVISO: Google Drive não parece estar montado em '/content/drive/MyDrive'.")
+        print("Por favor, verifique a Célula 1 e certifique-se de que o Drive foi montado com sucesso.")
+        input("Pressione Enter para continuar (se tiver certeza que o Drive está montado ou quer testar assim)...")
+
+
+    print("\n--- Por favor, forneça os caminhos completos para os arquivos ---")
+    video_input_path = input("Caminho do arquivo de vídeo de entrada (ex: /content/drive/MyDrive/Videos/meu_video.mp4): ").strip()
+    audio_output_path = input("Caminho para o arquivo de áudio de saída (ex: /content/drive/MyDrive/Audios/audio_extraido.mp3): ").strip()
+    transcription_output_path = input("Caminho para o arquivo de transcrição de saída (ex: /content/drive/MyDrive/Transcricoes/transcricao.txt): ").strip()
+    html_output_path = input("Caminho para o arquivo HTML didático de saída (ex: /content/drive/MyDrive/HTMLs/resumo_final.html): ").strip()
+
+    media_processing_crew = MediaProcessingCrew(
+        video_input_path, 
+        audio_output_path, 
+        transcription_output_path, 
+        html_output_path
+    )
+    
+    print("\nIniciando o processo da CrewAI...")
+    try:
+        result = media_processing_crew.run()
+    except Exception as e:
+        print(f"\n########################")
+        print(f"## ERRO CRÍTICO NA EXECUÇÃO DA CREW: {e}")
+        print(f"########################\n")
+        print(f"Detalhes do erro: {e}")
+        print("Verifique os logs acima para mais detalhes (especialmente erros de API, ferramentas ou caminhos de arquivo).")
+        exit()
+
+    print("\n\n########################")
+    print("## Resultados Finais do Processamento de Média:")
+    print("########################\n")
+    print(result)
+    print(f"\nVerifique os arquivos gerados em:")
+    print(f"- Áudio: {audio_output_path}")
+    print(f"- Transcrição: {transcription_output_path}")
+    print(f"- HTML Didático: {html_output_path}")
+
+    output_summary_file = 'media_processing_summary.txt'
+    with open(output_summary_file, 'w', encoding='utf-8') as file:
+        file.write("## Resumo do Processamento de Média da CrewAI:\n")
+        file.write("########################\n\n")
+        file.write(result)
+        file.write("\n########################\n")
+    print(f"\nO resumo do processo da CrewAI foi salvo em '{output_summary_file}'.")
+    print("Você pode encontrar este arquivo na pasta do projeto no Colab: /content/FirstCrewAIProject/")
+
+print("Arquivo 'main.py' criado com sucesso. Próximo passo é executá-lo.")
+
+
+
+
+
+
+
+
+Célula 6: Executar o Projeto
+Esta é a célula final. Ela simplesmente executa o arquivo main.py que você acabou de criar.
+
+
+# Célula 6: Executar o Projeto
+
+print("--- Executando main.py ---")
+%run main.py
+
+
+
+
+
+
+
+
+Instruções Finais Importantes:
+Execute as células UMA POR UMA, na ordem, da Célula 1 até a Célula 6.
+Reiniciar o Runtime: Se, a qualquer momento, você fizer grandes alterações nas instalações ou tiver erros persistentes, vá em Ambiente de execução (Runtime) no menu superior e clique em Reiniciar ambiente de execução (Restart runtime). Depois, execute todas as células novamente desde a Célula 1.
+Atenção aos caminhos dos arquivos: Quando a Célula 6 for executada, ela pedirá para você digitar os caminhos. Certifique-se de que o arquivo de vídeo de entrada realmente exista no seu Google Drive (ex: /content/drive/MyDrive/NomeDaSuaPasta/SeuVideo.mp4) e que os caminhos de saída (para áudio, transcrição e HTML) apontem para locais onde você tem permissão de escrita. Um erro comum é usar caminhos incorretos (por exemplo, MyDrive em vez de drive/MyDrive).
+Monitoramento: Preste atenção aos print statements e ao verbose=True nas configurações dos agentes e da Crew. Isso fornecerá feedback detalhado sobre o que cada agente está pensando e fazendo.
+Erros de Conexão/API: Se a Crew travar ou retornar erros relacionados à API da OpenAI, verifique:
+Sua OPENAI_API_KEY nos Secrets do Colab (se está correta e com acesso).
+Se você tem créditos suficientes na sua conta OpenAI.
+Se o modelo gpt-4o está disponível para sua conta.
